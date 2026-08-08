@@ -17,23 +17,31 @@ const conversions = [
   ["html", "txt", "native", "Extracts readable text from HTML markup."],
   ["txt", "json", "native", "Wraps plain text in a JSON document."],
   ["json", "txt", "native", "Pretty-prints JSON as plain text."],
-  ["pdf", "png", "engine", "Needs a bundled local PDF render engine."],
-  ["pdf", "jpeg", "engine", "Needs a bundled local PDF render engine."],
-  ["pdf", "txt", "engine", "Needs a bundled local PDF text extractor."],
-  ["xlsx", "csv", "engine", "Needs a bundled local spreadsheet parser."],
-  ["xlsx", "json", "engine", "Needs a bundled local spreadsheet parser."],
-  ["doc", "docx", "engine", "Needs a bundled local document conversion engine."],
-  ["docx", "pdf", "engine", "Needs a bundled local document conversion engine."],
-  ["pdf", "docx", "engine", "Needs OCR and layout reconstruction."],
-  ["pdf", "xlsx", "engine", "Needs table extraction and workbook generation."],
-  ["pdf", "pptx", "engine", "Needs slide reconstruction."],
-  ["xls", "xlsx", "engine", "Needs a bundled local spreadsheet engine."],
-  ["ppt", "pptx", "engine", "Needs a bundled local presentation engine."],
-  ["mp4", "webm", "engine", "Needs a bundled local media encoder."],
-  ["mp4", "mkv", "engine", "Needs a bundled local media encoder."],
-  ["webm", "mp4", "engine", "Needs a bundled local media encoder."],
-  ["wav", "mp3", "engine", "Needs a bundled local audio encoder."],
-  ["flac", "wav", "engine", "Needs a bundled local audio decoder."]
+  ["txt", "docx", "engine", "Runs through the local LibreOffice document engine."],
+  ["txt", "pdf", "engine", "Runs through the local LibreOffice document engine."],
+  ["pdf", "png", "engine", "Runs through the local Poppler PDF renderer."],
+  ["pdf", "jpeg", "engine", "Runs through the local Poppler PDF renderer."],
+  ["pdf", "txt", "engine", "Runs through the local Poppler text extractor."],
+  ["pdf", "docx", "engine", "Extracts PDF text, then writes DOCX through LibreOffice."],
+  ["pdf", "xlsx", "engine", "Extracts tabular-looking PDF text, then writes XLSX through LibreOffice."],
+  ["pdf", "pptx", "engine", "Renders PDF pages into a PPTX slide deck."],
+  ["xlsx", "csv", "engine", "Runs through the local LibreOffice spreadsheet engine."],
+  ["xlsx", "json", "engine", "Converts through local CSV, then emits JSON."],
+  ["xls", "xlsx", "engine", "Runs through the local LibreOffice spreadsheet engine."],
+  ["xls", "csv", "engine", "Runs through the local LibreOffice spreadsheet engine."],
+  ["xls", "json", "engine", "Converts through local CSV, then emits JSON."],
+  ["csv", "xlsx", "engine", "Runs through the local LibreOffice spreadsheet engine."],
+  ["doc", "docx", "engine", "Runs through the local LibreOffice document engine."],
+  ["doc", "pdf", "engine", "Runs through the local LibreOffice document engine."],
+  ["docx", "pdf", "engine", "Runs through the local LibreOffice document engine."],
+  ["docx", "txt", "engine", "Runs through the local LibreOffice document engine."],
+  ["ppt", "pptx", "engine", "Runs through the local LibreOffice presentation engine."],
+  ["pptx", "pdf", "engine", "Runs through the local LibreOffice presentation engine."],
+  ["mp4", "webm", "engine", "Runs through the local FFmpeg media engine."],
+  ["mp4", "mkv", "engine", "Runs through the local FFmpeg media engine."],
+  ["webm", "mp4", "engine", "Runs through the local FFmpeg media engine."],
+  ["wav", "mp3", "engine", "Runs through the local FFmpeg audio engine."],
+  ["flac", "wav", "engine", "Runs through the local FFmpeg audio engine."]
 ];
 
 const state = {
@@ -121,7 +129,7 @@ function clearAll() {
   els.fileInput.value = "";
   renderFiles();
   renderResults();
-  setStatus("Standalone engine ready");
+  setStatus("Local engines ready");
 }
 
 function swapFormats() {
@@ -222,7 +230,7 @@ async function convertFile(file, source, target) {
 
   const recipe = conversions.find(([from, to]) => from === source && to === target);
   if (recipe?.[2] === "engine") {
-    throw new Error(`${source.toUpperCase()} to ${target.toUpperCase()} needs a bundled local conversion engine before it can run in this standalone app.`);
+    return convertOnServer(file, source, target);
   }
 
   throw new Error(`${source.toUpperCase()} to ${target.toUpperCase()} is not implemented in the browser engine yet.`);
@@ -345,6 +353,39 @@ function makeTextOutput(file, name, message) {
     blob,
     url: URL.createObjectURL(blob)
   };
+}
+
+async function convertOnServer(file, source, target) {
+  const formData = new FormData();
+  formData.set("file", file);
+  formData.set("source", source);
+  formData.set("target", target);
+
+  const response = await fetch("/api/convert", {
+    method: "POST",
+    body: formData
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || "Local engine conversion failed.");
+  }
+  return payload.outputs.map(output => {
+    const blob = base64ToBlob(output.data, output.type);
+    return {
+      name: output.name,
+      blob,
+      url: URL.createObjectURL(blob)
+    };
+  });
+}
+
+function base64ToBlob(data, type) {
+  const binary = atob(data);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return new Blob([bytes], { type });
 }
 
 function outputFromBlob(file, ext, blob, literalName = false) {
