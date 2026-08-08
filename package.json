@@ -2,6 +2,7 @@
   "name": "file-format-converter",
   "version": "0.1.0",
   "private": true,
+  "license": "GPL-3.0-or-later",
   "type": "module",
   "scripts": {
     "start": "bun server.js",

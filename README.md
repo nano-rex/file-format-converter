@@ -28,3 +28,7 @@ bun run start
 ```
 
 Then open `http://localhost:3000`.
+
+## License
+
+GPL-3.0-or-later. This keeps the project compatible with future GPL-covered converter code.
