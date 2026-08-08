@@ -320,6 +320,11 @@ ul {
   color: var(--gold);
 }
 
+.planned span {
+  background: #f2f4f7;
+  color: var(--muted);
+}
+
 .conversion p {
   color: var(--muted);
   font-size: 0.88rem;

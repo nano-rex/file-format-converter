@@ -1,7 +1,7 @@
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { deflateRawSync, inflateRawSync } from "node:zlib";
+import { deflateRawSync, inflateRawSync, inflateSync } from "node:zlib";
 
 const publicDir = new URL(".", import.meta.url);
 const port = Number(Bun.env.PORT || 3000);
@@ -73,144 +73,57 @@ async function convertWithLocalEngine(inputPath, originalName, source, target, w
     return [{ path: output, name: basename(output), type: mimeFor("txt") }];
   }
 
-  if (source === "pdf" && (target === "png" || target === "jpeg")) {
-    return pdfToImages(inputPath, originalName, target, workDir);
+  if (source === "txt" && target === "pdf") {
+    const output = join(workDir, `${stem(originalName)}.pdf`);
+    await writeFile(output, createTextPdf(await readFile(inputPath, "utf8"), originalName));
+    return [{ path: output, name: basename(output), type: mimeFor("pdf") }];
+  }
+
+  if (source === "docx" && target === "pdf") {
+    const output = join(workDir, `${stem(originalName)}.pdf`);
+    await writeFile(output, createTextPdf(readDocxText(await readFile(inputPath)), originalName));
+    return [{ path: output, name: basename(output), type: mimeFor("pdf") }];
   }
 
   if (source === "pdf" && target === "txt") {
     const output = join(workDir, `${stem(originalName)}.txt`);
-    await run("pdftotext", ["-layout", inputPath, output]);
-    return [{ path: output, name: basename(output), type: "text/plain" }];
+    await writeFile(output, extractPdfText(await readFile(inputPath)));
+    return [{ path: output, name: basename(output), type: mimeFor("txt") }];
   }
 
   if (source === "pdf" && target === "docx") {
-    const textPath = join(workDir, `${stem(originalName)}.txt`);
-    await run("pdftotext", ["-layout", inputPath, textPath]);
-    return officeConvert(textPath, originalName, "docx", workDir);
+    const output = join(workDir, `${stem(originalName)}.docx`);
+    await writeFile(output, createDocx(extractPdfText(await readFile(inputPath)), originalName));
+    return [{ path: output, name: basename(output), type: mimeFor("docx") }];
   }
 
   if (source === "pdf" && target === "xlsx") {
-    const textPath = join(workDir, `${stem(originalName)}.txt`);
-    const csvPath = join(workDir, `${stem(originalName)}.csv`);
-    await run("pdftotext", ["-layout", inputPath, textPath]);
-    await writeFile(csvPath, textToCsv(await readFile(textPath, "utf8")));
-    return officeConvert(csvPath, originalName, "xlsx", workDir);
+    const output = join(workDir, `${stem(originalName)}.xlsx`);
+    await writeFile(output, createXlsx(csvToRows(textToCsv(extractPdfText(await readFile(inputPath)))), originalName));
+    return [{ path: output, name: basename(output), type: mimeFor("xlsx") }];
   }
 
   if (source === "pdf" && target === "pptx") {
-    const images = await pdfToImages(inputPath, originalName, "png", workDir);
-    return [await imagesToPptx(images, originalName, workDir)];
+    const output = join(workDir, `${stem(originalName)}.pptx`);
+    await writeFile(output, createTextPptx(extractPdfText(await readFile(inputPath)), originalName));
+    return [{ path: output, name: basename(output), type: mimeFor("pptx") }];
   }
 
-  if (isOfficeSource(source) && isOfficeTarget(target)) {
-    return officeConvert(inputPath, originalName, target, workDir);
-  }
-
-  if ((source === "xlsx" || source === "xls") && target === "json") {
-    const [csv] = await officeConvert(inputPath, originalName, "csv", workDir);
-    const jsonPath = join(workDir, `${stem(originalName)}.json`);
-    await writeFile(jsonPath, JSON.stringify(csvToJson(await readFile(csv.path, "utf8")), null, 2));
-    return [{ path: jsonPath, name: basename(jsonPath), type: "application/json" }];
-  }
-
-  if (isMediaSource(source) && isMediaTarget(target)) {
-    return mediaConvert(inputPath, originalName, target, workDir);
-  }
-
-  throw new Error(`${source.toUpperCase()} to ${target.toUpperCase()} is not supported by the local engine yet.`);
+  throw new Error(`${source.toUpperCase()} to ${target.toUpperCase()} is not supported by the native standalone engine yet. This app does not call Poppler, LibreOffice, FFmpeg, or other external programs.`);
 }
 
-async function pdfToImages(inputPath, originalName, target, workDir) {
-  const outDir = join(workDir, "pdf-pages");
-  const prefix = join(outDir, "page");
-  const flag = target === "jpeg" ? "-jpeg" : "-png";
-  const ext = target === "jpeg" ? "jpg" : "png";
-  await mkdir(outDir, { recursive: true });
-  await run("pdftoppm", ["-r", "160", flag, inputPath, prefix]);
-  const files = (await readdir(outDir))
-    .filter(name => name.endsWith(`.${ext}`))
-    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  return files.map((name, index) => ({
-    path: join(outDir, name),
-    name: `${stem(originalName)}-page-${String(index + 1).padStart(2, "0")}.${target}`,
-    type: target === "jpeg" ? "image/jpeg" : "image/png"
-  }));
-}
-
-async function officeConvert(inputPath, originalName, target, workDir) {
-  const outDir = join(workDir, "office-output");
-  const profileDir = join(workDir, "libreoffice-profile");
-  await mkdir(outDir, { recursive: true });
-  await mkdir(profileDir, { recursive: true });
-  await run("soffice", [
-    `-env:UserInstallation=file://${profileDir}`,
-    "--headless",
-    "--nologo",
-    "--nofirststartwizard",
-    "--convert-to",
-    target,
-    "--outdir",
-    outDir,
-    inputPath
-  ], { HOME: workDir });
-
-  const output = await findConvertedFile(outDir, target);
-  return [{
-    path: output,
-    name: `${stem(originalName)}.${normalizeOutputExtension(target)}`,
-    type: mimeFor(target)
-  }];
-}
-
-async function mediaConvert(inputPath, originalName, target, workDir) {
-  const output = join(workDir, `${stem(originalName)}.${target}`);
-  await run("ffmpeg", ["-y", "-i", inputPath, output]);
-  return [{ path: output, name: basename(output), type: mimeFor(target) }];
-}
-
-async function imagesToPptx(images, originalName, workDir) {
-  const output = join(workDir, `${stem(originalName)}.pptx`);
+function createTextPptx(text, originalName) {
   const files = [
-    ["[Content_Types].xml", pptxContentTypes(images.length)],
+    ["[Content_Types].xml", pptxContentTypes(1)],
     ["_rels/.rels", rootRels()],
-    ["docProps/app.xml", appProps(images.length)],
+    ["docProps/app.xml", appProps(1)],
     ["docProps/core.xml", coreProps(originalName)],
-    ["ppt/presentation.xml", presentationXml(images.length)],
-    ["ppt/_rels/presentation.xml.rels", presentationRels(images.length)]
+    ["ppt/presentation.xml", presentationXml(1)],
+    ["ppt/_rels/presentation.xml.rels", presentationRels(1)],
+    ["ppt/slides/slide1.xml", textSlideXml(text)],
+    ["ppt/slides/_rels/slide1.xml.rels", emptyRels()]
   ];
-
-  for (let index = 0; index < images.length; index += 1) {
-    const slideNumber = index + 1;
-    files.push(
-      [`ppt/media/image${slideNumber}.png`, await readFile(images[index].path)],
-      [`ppt/slides/slide${slideNumber}.xml`, slideXml(slideNumber)],
-      [`ppt/slides/_rels/slide${slideNumber}.xml.rels`, slideRels(slideNumber)]
-    );
-  }
-
-  await writeFile(output, createZip(files));
-  return {
-    path: output,
-    name: `${stem(originalName)}.pptx`,
-    type: mimeFor("pptx")
-  };
-}
-
-async function run(command, args, extraEnv = {}, cwd) {
-  const process = Bun.spawn([command, ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...Bun.env, ...extraEnv },
-    cwd
-  });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(process.stdout).text(),
-    new Response(process.stderr).text(),
-    process.exited
-  ]);
-  if (exitCode !== 0) {
-    throw new Error(`${command} failed: ${(stderr || stdout).trim()}`);
-  }
+  return createZip(files);
 }
 
 function pptxContentTypes(count) {
@@ -340,6 +253,59 @@ function slideRels(slideNumber) {
 `;
 }
 
+function textSlideXml(text) {
+  const runs = text.split(/\r?\n/).slice(0, 28).map(line => (
+    `<a:p><a:r><a:t>${escapeXml(line)}</a:t></a:r></a:p>`
+  )).join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld>
+    <p:spTree>
+      <p:nvGrpSpPr>
+        <p:cNvPr id="1" name=""/>
+        <p:cNvGrpSpPr/>
+        <p:nvPr/>
+      </p:nvGrpSpPr>
+      <p:grpSpPr>
+        <a:xfrm>
+          <a:off x="0" y="0"/>
+          <a:ext cx="0" cy="0"/>
+          <a:chOff x="0" y="0"/>
+          <a:chExt cx="0" cy="0"/>
+        </a:xfrm>
+      </p:grpSpPr>
+      <p:sp>
+        <p:nvSpPr>
+          <p:cNvPr id="2" name="Text"/>
+          <p:cNvSpPr txBox="1"/>
+          <p:nvPr/>
+        </p:nvSpPr>
+        <p:spPr>
+          <a:xfrm>
+            <a:off x="609600" y="609600"/>
+            <a:ext cx="10972800" cy="5638800"/>
+          </a:xfrm>
+          <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+        </p:spPr>
+        <p:txBody>
+          <a:bodyPr wrap="square"/>
+          <a:lstStyle/>
+          ${runs || "<a:p/>"}
+        </p:txBody>
+      </p:sp>
+    </p:spTree>
+  </p:cSld>
+  <p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>
+</p:sld>
+`;
+}
+
+function emptyRels() {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>
+`;
+}
+
 function createXlsx(rows, originalName) {
   return createZip([
     ["[Content_Types].xml", xlsxContentTypes()],
@@ -376,6 +342,103 @@ function readDocxText(buffer) {
   const document = entries.get("word/document.xml");
   if (!document) throw new Error("DOCX file does not contain word/document.xml.");
   return parseDocumentText(document.toString("utf8"));
+}
+
+function createTextPdf(text, originalName) {
+  const lines = text.split(/\r?\n/).slice(0, 48);
+  const content = `BT
+/F1 11 Tf
+50 780 Td
+14 TL
+${lines.map(line => `(${escapePdfString(line)}) Tj T*`).join("\n")}
+ET`;
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`,
+    `<< /Title (${escapePdfString(stem(originalName))}) /Producer (File Format Converter) >>`
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (let index = 0; index < objects.length; index += 1) {
+    offsets.push(Buffer.byteLength(pdf));
+    pdf += `${index + 1} 0 obj\n${objects[index]}\nendobj\n`;
+  }
+  const xrefOffset = Buffer.byteLength(pdf);
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets.slice(1)) {
+    pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R /Info 6 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  return Buffer.from(pdf);
+}
+
+function extractPdfText(buffer) {
+  const source = buffer.toString("latin1");
+  const chunks = [];
+  for (const match of source.matchAll(/<<(.*?)>>\s*stream\r?\n?([\s\S]*?)\r?\n?endstream/g)) {
+    const dictionary = match[1];
+    const stream = Buffer.from(match[2], "latin1");
+    if (/\/FlateDecode\b/.test(dictionary)) {
+      try {
+        chunks.push(inflateRawSync(stream).toString("latin1"));
+      } catch {
+        try {
+          chunks.push(inflateSync(stream).toString("latin1"));
+        } catch {
+          chunks.push("");
+        }
+      }
+    } else {
+      chunks.push(stream.toString("latin1"));
+    }
+  }
+
+  const text = chunks
+    .map(extractPdfTextOperators)
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  if (!text) {
+    throw new Error("This PDF has no extractable text in the native parser. Native PDF rendering is not implemented.");
+  }
+  return text;
+}
+
+function extractPdfTextOperators(content) {
+  const out = [];
+  for (const match of content.matchAll(/\((?:\\.|[^\\)])*\)\s*Tj|\[(.*?)\]\s*TJ/gs)) {
+    const token = match[0];
+    if (token.endsWith("Tj")) {
+      out.push(decodePdfString(token.match(/\(((?:\\.|[^\\)])*)\)/s)?.[1] || ""));
+    } else {
+      for (const part of (match[1] || "").matchAll(/\((?:\\.|[^\\)])*\)/gs)) {
+        out.push(decodePdfString(part[0].slice(1, -1)));
+      }
+    }
+  }
+  return out.join(" ");
+}
+
+function decodePdfString(value) {
+  return value
+    .replaceAll(/\\([nrtbf()\\])/g, (_, char) => ({
+      n: "\n",
+      r: "\r",
+      t: "\t",
+      b: "\b",
+      f: "\f",
+      "(": "(",
+      ")": ")",
+      "\\": "\\"
+    }[char] || char))
+    .replaceAll(/\\([0-7]{1,3})/g, (_, octal) => String.fromCharCode(Number.parseInt(octal, 8)));
+}
+
+function escapePdfString(value) {
+  return value.replaceAll(/([()\\])/g, "\\$1").replaceAll("\r", "").replaceAll("\n", "\\n");
 }
 
 function createZip(files) {
@@ -674,16 +737,6 @@ const crcTable = Array.from({ length: 256 }, (_, index) => {
   return crc >>> 0;
 });
 
-async function findConvertedFile(outDir, target) {
-  const ext = `.${normalizeOutputExtension(target)}`;
-  const files = await readdir(outDir);
-  const match = files.find(name => name.toLowerCase().endsWith(ext));
-  if (!match) {
-    throw new Error(`Converter did not produce a ${target.toUpperCase()} file.`);
-  }
-  return join(outDir, match);
-}
-
 async function encodeOutputs(outputs) {
   return Promise.all(outputs.map(async output => ({
     name: output.name,
@@ -774,26 +827,6 @@ function stem(name) {
 
 function normalizeFormat(format) {
   return format.toLowerCase().replace("jpg", "jpeg");
-}
-
-function normalizeOutputExtension(format) {
-  return format === "jpeg" ? "jpg" : format;
-}
-
-function isOfficeSource(format) {
-  return ["doc", "docx", "odt", "rtf", "html", "txt", "xls", "xlsx", "ods", "csv", "ppt", "pptx", "odp"].includes(format);
-}
-
-function isOfficeTarget(format) {
-  return ["docx", "pdf", "html", "txt", "xlsx", "csv", "pptx"].includes(format);
-}
-
-function isMediaSource(format) {
-  return ["mp4", "webm", "mkv", "mov", "mp3", "wav", "flac", "ogg"].includes(format);
-}
-
-function isMediaTarget(format) {
-  return ["mp4", "webm", "mkv", "mov", "mp3", "wav", "flac", "ogg"].includes(format);
 }
 
 function mimeFor(format) {
