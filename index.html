@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>File Format Converter</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <h1>File Format Converter</h1>
+          <p>Convert browser-supported image, text, and data formats locally with no uploads or CDN dependencies.</p>
+        </div>
+        <div class="status-pill" id="engineStatus">Standalone engine ready</div>
+      </header>
+
+      <section class="workspace" aria-label="Converter workspace">
+        <div class="dropzone" id="dropzone">
+          <input id="fileInput" type="file" multiple>
+          <div class="drop-art" aria-hidden="true">
+            <span>PDF</span>
+            <span>DOCX</span>
+            <span>PNG</span>
+            <span>MP4</span>
+          </div>
+          <strong>Drop files here</strong>
+          <button class="primary" id="pickButton" type="button">Choose Files</button>
+        </div>
+
+        <form class="control-panel" id="convertForm">
+          <label>
+            Input format
+            <select id="fromFormat"></select>
+          </label>
+          <button class="swap" id="swapButton" type="button" title="Swap formats" aria-label="Swap formats">⇄</button>
+          <label>
+            Output format
+            <select id="toFormat"></select>
+          </label>
+          <button class="primary" id="convertButton" type="submit">Convert</button>
+        </form>
+
+        <div class="queue" aria-live="polite">
+          <div class="queue-head">
+            <h2>Files</h2>
+            <button id="clearButton" type="button">Clear</button>
+          </div>
+          <ul id="fileList"></ul>
+        </div>
+
+        <div class="results">
+          <div class="queue-head">
+            <h2>Outputs</h2>
+            <button id="downloadAllButton" type="button">Download All</button>
+          </div>
+          <ul id="resultList"></ul>
+        </div>
+      </section>
+
+      <section class="matrix" aria-label="Conversion matrix">
+        <div class="matrix-head">
+          <h2>Formats</h2>
+          <input id="searchInput" type="search" placeholder="Search conversions">
+        </div>
+        <div class="matrix-grid" id="matrixGrid"></div>
+      </section>
+    </main>
+
+    <template id="fileTemplate">
+      <li class="file-row">
+        <div class="file-icon"></div>
+        <div>
+          <strong class="file-name"></strong>
+          <span class="file-meta"></span>
+        </div>
+      </li>
+    </template>
+
+    <template id="resultTemplate">
+      <li class="result-row">
+        <div>
+          <strong class="result-name"></strong>
+          <span class="result-meta"></span>
+        </div>
+        <a class="download-link">Download</a>
+      </li>
+    </template>
+
+    <script src="app.js"></script>
+  </body>
+</html>
