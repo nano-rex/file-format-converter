@@ -17,30 +17,38 @@ const conversions = [
   ["html", "txt", "native", "Extracts readable text from HTML markup."],
   ["txt", "json", "native", "Wraps plain text in a JSON document."],
   ["json", "txt", "native", "Pretty-prints JSON as plain text."],
-  ["txt", "docx", "engine", "Built-in minimal DOCX writer."],
-  ["txt", "pdf", "engine", "Built-in plain-text PDF writer."],
-  ["docx", "pdf", "engine", "Built-in DOCX text extractor plus plain-text PDF writer."],
-  ["pdf", "txt", "engine", "Built-in best-effort text extractor for simple PDFs."],
-  ["pdf", "docx", "engine", "Built-in best-effort PDF text extraction plus DOCX writer."],
-  ["pdf", "xlsx", "engine", "Built-in best-effort PDF text extraction plus XLSX writer."],
-  ["pdf", "pptx", "engine", "Built-in best-effort PDF text extraction plus PPTX writer."],
-  ["xlsx", "csv", "engine", "Built-in minimal XLSX reader."],
-  ["xlsx", "json", "engine", "Built-in minimal XLSX reader."],
-  ["xls", "xlsx", "planned", "Native binary XLS parser is not implemented yet."],
-  ["xls", "csv", "planned", "Native binary XLS parser is not implemented yet."],
-  ["xls", "json", "planned", "Native binary XLS parser is not implemented yet."],
-  ["csv", "xlsx", "engine", "Built-in minimal XLSX writer."],
-  ["doc", "docx", "planned", "Native binary DOC parser is not implemented yet."],
-  ["doc", "pdf", "planned", "Native binary DOC parser is not implemented yet."],
-  ["docx", "txt", "engine", "Built-in minimal DOCX text extractor."],
-  ["ppt", "pptx", "planned", "Native binary PPT parser is not implemented yet."],
-  ["pptx", "pdf", "planned", "Native PPTX renderer is not implemented yet."],
+  ...engineConversions(),
+  ["doc", "docx", "planned", "Legacy binary DOC is not supported. Save as DOCX first."],
+  ["xls", "xlsx", "planned", "Legacy binary XLS is not supported. Save as XLSX first."],
+  ["ppt", "pptx", "planned", "Legacy binary PPT is not supported. Save as PPTX first."],
+  ["pdf", "png", "planned", "Rendering PDF pages to images is not implemented."],
   ["mp4", "webm", "planned", "Native media transcoder is not implemented yet."],
   ["mp4", "mkv", "planned", "Native media transcoder is not implemented yet."],
   ["webm", "mp4", "planned", "Native media transcoder is not implemented yet."],
   ["wav", "mp3", "planned", "Native audio encoder is not implemented yet."],
   ["flac", "wav", "planned", "Native audio decoder is not implemented yet."]
 ];
+
+// Conversions handled by the Bun server (src/convert.js keeps the same table).
+function engineConversions() {
+  const notes = {
+    pdf: "Built-in PDF parser with layout analysis: headings, paragraphs, and tables.",
+    docx: "Built-in DOCX reader: headings, lists, tables, and text boxes.",
+    xlsx: "Built-in XLSX reader: every visible sheet, dates, and cached formula values.",
+    pptx: "Built-in PPTX reader: slide titles, text, and tables in slide order.",
+    txt: "Built-in writer with word wrapping and pagination.",
+    csv: "Built-in table writer."
+  };
+  const table = {
+    pdf: ["txt", "html", "docx", "xlsx", "pptx", "csv"],
+    docx: ["txt", "html", "pdf", "pptx"],
+    xlsx: ["csv", "json", "txt", "html", "pdf", "docx"],
+    pptx: ["txt", "html", "pdf", "docx"],
+    txt: ["docx", "pdf", "pptx"],
+    csv: ["xlsx", "pdf", "docx", "html"]
+  };
+  return Object.entries(table).flatMap(([from, targets]) => targets.map(to => [from, to, "engine", notes[from]]));
+}
 
 const state = {
   files: [],
@@ -76,12 +84,24 @@ function init() {
 
 function fillFormatSelects() {
   for (const fmt of formats) {
-    const fromOption = new Option(fmt.toUpperCase(), fmt);
-    const toOption = new Option(fmt.toUpperCase(), fmt);
-    els.fromFormat.append(fromOption);
-    els.toFormat.append(toOption);
+    els.fromFormat.append(new Option(fmt.toUpperCase(), fmt));
   }
-  els.toFormat.value = "png";
+  updateTargets();
+}
+
+// Only offers output formats the selected input format can actually convert to.
+function updateTargets() {
+  const source = normalizeFormat(els.fromFormat.value);
+  const previous = els.toFormat.value;
+  let targets = formats.filter(fmt => fmt !== "auto" && fmt !== "jpg");
+  if (source !== "auto") {
+    const supported = conversions.filter(([from, , engine]) => from === source && engine !== "planned").map(([, to]) => to);
+    if (isImage(source)) supported.push("png", "jpeg", "webp");
+    targets = targets.filter(fmt => supported.includes(fmt) && fmt !== source);
+  }
+  els.toFormat.replaceChildren(...targets.map(fmt => new Option(fmt.toUpperCase(), fmt)));
+  if (targets.includes(previous)) els.toFormat.value = previous;
+  els.convertForm.querySelector("#convertButton").disabled = targets.length === 0;
 }
 
 function bindEvents() {
@@ -89,6 +109,7 @@ function bindEvents() {
   els.fileInput.addEventListener("change", event => addFiles(event.target.files));
   els.clearButton.addEventListener("click", clearAll);
   els.swapButton.addEventListener("click", swapFormats);
+  els.fromFormat.addEventListener("change", updateTargets);
   els.convertForm.addEventListener("submit", event => {
     event.preventDefault();
     convertQueuedFiles();
@@ -115,14 +136,16 @@ function addFiles(fileList) {
   const incoming = [...fileList];
   state.files.push(...incoming);
   if (incoming[0]) {
-    els.fromFormat.value = extensionFor(incoming[0]) || "auto";
+    const format = normalizeFormat(extensionFor(incoming[0]));
+    els.fromFormat.value = formats.includes(format) ? format : "auto";
+    updateTargets();
   }
   renderFiles();
 }
 
 function clearAll() {
   state.files = [];
-  state.outputs.forEach(output => URL.revokeObjectURL(output.url));
+  state.outputs.forEach(output => output.url && URL.revokeObjectURL(output.url));
   state.outputs = [];
   els.fileInput.value = "";
   renderFiles();
@@ -132,8 +155,11 @@ function clearAll() {
 
 function swapFormats() {
   const from = els.fromFormat.value;
-  els.fromFormat.value = els.toFormat.value;
-  els.toFormat.value = from === "auto" ? "png" : from;
+  const to = els.toFormat.value;
+  if (!to) return;
+  els.fromFormat.value = to;
+  updateTargets();
+  if ([...els.toFormat.options].some(option => option.value === from)) els.toFormat.value = from;
 }
 
 function renderFiles() {
@@ -152,10 +178,16 @@ function renderResults() {
   for (const output of state.outputs) {
     const node = els.resultTemplate.content.cloneNode(true);
     node.querySelector(".result-name").textContent = output.name;
-    node.querySelector(".result-meta").textContent = readableSize(output.blob.size);
     const link = node.querySelector(".download-link");
-    link.href = output.url;
-    link.download = output.name;
+    if (output.error) {
+      node.querySelector(".result-row").classList.add("failed");
+      node.querySelector(".result-meta").textContent = output.error;
+      link.remove();
+    } else {
+      node.querySelector(".result-meta").textContent = readableSize(output.blob.size);
+      link.href = output.url;
+      link.download = output.name;
+    }
     els.resultList.append(node);
   }
 }
@@ -180,21 +212,26 @@ async function convertQueuedFiles() {
   }
 
   const target = normalizeFormat(els.toFormat.value);
+  if (!target) {
+    setStatus("Choose an output format");
+    return;
+  }
   setStatus("Converting");
+  let failures = 0;
 
   for (const file of state.files) {
     const source = normalizeFormat(els.fromFormat.value === "auto" ? extensionFor(file) : els.fromFormat.value);
     try {
       const outputs = await convertFile(file, source, target);
       state.outputs.push(...outputs);
-      renderResults();
     } catch (error) {
-      state.outputs.push(makeTextOutput(file, "conversion-error.txt", error.message));
-      renderResults();
+      failures += 1;
+      state.outputs.push({ name: file.name, error: error.message || "Conversion failed." });
     }
+    renderResults();
   }
 
-  setStatus("Conversion complete");
+  setStatus(failures ? `Finished with ${failures} error${failures === 1 ? "" : "s"}` : "Conversion complete");
 }
 
 async function convertFile(file, source, target) {
@@ -227,11 +264,15 @@ async function convertFile(file, source, target) {
   }
 
   const recipe = conversions.find(([from, to]) => from === source && to === target);
-  if (recipe?.[2] === "engine") {
+  if (recipe?.[2] === "planned") {
+    throw new Error(recipe[3]);
+  }
+  if (recipe?.[2] === "engine" || !formats.includes(source)) {
+    // The server also inspects the file content, so unknown extensions are sent as-is.
     return convertOnServer(file, source, target);
   }
 
-  throw new Error(`${source.toUpperCase()} to ${target.toUpperCase()} is not implemented in the browser engine yet.`);
+  throw new Error(`${source.toUpperCase()} to ${target.toUpperCase()} is not supported.`);
 }
 
 async function convertImage(file, target) {
@@ -322,7 +363,8 @@ function extensionFor(file) {
 }
 
 function normalizeFormat(format) {
-  return (format || "").toLowerCase().replace("jpg", "jpeg");
+  const value = (format || "").toLowerCase();
+  return { jpg: "jpeg", htm: "html", xlsm: "xlsx", docm: "docx", pptm: "pptx" }[value] || value;
 }
 
 function isImage(format) {
@@ -343,16 +385,6 @@ function makeBlobOutput(file, ext, content, type) {
   return outputFromBlob(file, ext, new Blob([content], { type }));
 }
 
-function makeTextOutput(file, name, message) {
-  const stem = nameWithoutExtension(file.name);
-  const blob = new Blob([message], { type: "text/plain" });
-  return {
-    name: `${stem}-${name}`,
-    blob,
-    url: URL.createObjectURL(blob)
-  };
-}
-
 async function convertOnServer(file, source, target) {
   const formData = new FormData();
   formData.set("file", file);
@@ -363,7 +395,12 @@ async function convertOnServer(file, source, target) {
     method: "POST",
     body: formData
   });
-  const payload = await response.json();
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error("The conversion server did not return a valid response. Is `bun run start` still running?");
+  }
   if (!response.ok) {
     throw new Error(payload.error || "Local engine conversion failed.");
   }
@@ -415,6 +452,7 @@ function setStatus(message) {
 
 function downloadAll() {
   for (const output of state.outputs) {
+    if (output.error) continue;
     const link = document.createElement("a");
     link.href = output.url;
     link.download = output.name;

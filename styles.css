@@ -354,3 +354,12 @@ ul {
     width: 100%;
   }
 }
+
+.result-row.failed .result-name {
+  color: #b3261e;
+}
+
+.result-row.failed .result-meta {
+  color: #b3261e;
+  white-space: pre-wrap;
+}

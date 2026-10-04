@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "bun server.js",
-    "dev": "bun --watch server.js"
+    "dev": "bun --watch server.js",
+    "test": "bun test"
   },
   "dependencies": {}
 }
